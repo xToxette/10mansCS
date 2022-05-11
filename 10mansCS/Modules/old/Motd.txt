@@ -1,0 +1,52 @@
+﻿using Discord;
+using Discord.Interactions;
+using Discord.WebSocket;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+
+namespace TiimmmeeyyyCS.Services
+{
+    [RequireBotPermission(GuildPermission.Administrator)]
+    [Group("motd", "The MOTD group")]
+    public class MotdModule : InteractionModuleBase<SocketInteractionContext>
+    {
+        public InteractionService Commands {get; set; }
+        //private CommandHandler _handler;
+
+        //public RegionModule(CommandHandler handler)
+        //{
+        //    _handler = handler;
+        //}
+
+        [SlashCommand("kick", "Kicks a user from the guild")]
+        public async Task KickAsync(IGuildUser user)
+        {
+            await Context.Interaction.RespondAsync($"Kicked player {user.Username}", ephemeral: true);
+            await user.KickAsync();
+        }
+
+        [SlashCommand("shutdown", "Stops the bot")]
+        public async Task QuitAsync()
+        {
+            await Context.Interaction.RespondAsync($"Turning off the bot...", ephemeral: true);
+            await Context.Client.LogoutAsync();
+            System.Environment.Exit(0);
+        }
+    }
+
+    public class TestModule : InteractionModuleBase<SocketInteractionContext>
+    {
+        [SlashCommand("test", "a test command")]
+        public async Task TestAsync()
+        {
+            Console.WriteLine("Test worked");
+        }
+    }
+}
+
+
+

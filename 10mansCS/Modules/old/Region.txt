@@ -1,0 +1,105 @@
+﻿using Discord;
+using Discord.Interactions;
+using Discord.WebSocket;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+
+namespace TiimmmeeyyyCS.Services
+{
+    public class RegionModule : InteractionModuleBase<SocketInteractionContext>
+    {
+        public InteractionService Commands {get; set; }
+        //private CommandHandler _handler;
+
+        //public RegionModule(CommandHandler handler)
+        //{
+        //    _handler = handler;
+        //}
+
+        [RequireUserPermission(GuildPermission.Administrator)]
+        [SlashCommand("region", "spawns the region menu")]
+        public async Task RegionMenu()
+        {
+            var menuBuilder = new SelectMenuBuilder()
+                .WithPlaceholder("Select where you live")
+                .WithCustomId("region-menu")
+                .WithMaxValues(1)
+                .WithMinValues(1)
+                .AddOption("🟢 Europe", "europe", "You live in Europe")
+                .AddOption("🟡 Asia", "asia", "You live in Asia")
+                .AddOption("🔵 America", "america", "You live in America")
+                .AddOption("🟠 Oceania", "oceania", "You live in Oceania")
+                .AddOption("🟤 Sand Monkey", "sandmonkey", "You are a Sand Monkey");
+
+            var builder = new ComponentBuilder()
+                .WithSelectMenu(menuBuilder);
+
+            await Context.Interaction.RespondAsync("The menu was spawned. You can click below to remove this message", ephemeral: true);
+            await ReplyAsync(embed: new EmbedBuilder { Description = "Before you are a part of this server. You have to select a region" }.Build(), components: builder.Build()); ;
+        }
+
+        [ComponentInteraction("region-menu")]
+        public async Task RegionMenuRespond(string[] selectedRegion)
+        {
+            // Logging that a user used the region menu
+            Console.WriteLine($"{Context.User.Username} changed region to {selectedRegion.First()}");
+
+            ulong[] allroles = { 609725319187791933, 609724679246053389, 609725217903869962, 889496526127251487, 662289594741424130 };
+            
+            // Get the user class that has the ChangeRole methods.
+            var GuildUser = Context.User as IGuildUser;
+            var UserRoles = GuildUser.RoleIds;
+
+            // Adding the cunt role here if the user doesnt have it yet
+            if (!UserRoles.Contains((ulong)413757543807188996))
+            {
+                await GuildUser.AddRoleAsync(413757543807188996);
+            }
+
+            // In order for people to be able to change their role, we must delete the previous role.
+            // Otherwise a person could get every role by selecting all of them one by one. For this
+            // we could have used GuildUser.RemoveRolesAsync, but after testing that seems a bit inefficient.
+            // So we check if a region role is addded to the user and then delete it.
+            for (int i = 0; i < allroles.Length; i++)
+            {
+                if (UserRoles.Contains(allroles[i]))
+                {
+                    await GuildUser.RemoveRoleAsync(allroles[i]);
+                    break;
+                }
+            }
+
+            // Adding the correct role to the user based on what option they selected
+            switch (selectedRegion.First())
+            {
+                case "europe":
+                    await GuildUser.AddRoleAsync(609725319187791933);
+                    break;
+                case "asia":
+                    await GuildUser.AddRoleAsync(609724679246053389);
+                    break;
+                case "america":
+                    await GuildUser.AddRoleAsync(609725217903869962);
+                    break;
+                case "oceania":
+                    await GuildUser.AddRoleAsync(889496526127251487);
+                    break;
+                case "sandmonkey":
+                    await GuildUser.AddRoleAsync(662289594741424130);
+                    break;
+            }
+
+            // This message is for necessary, because if no message is replied to an interaction, then it will tell the
+            // user that interaction had failed. So we just send a ephemeral message, which only the author can see, but
+            // there is a small change that it will not send because of a rate limit (Only if the user spams it)
+            await RespondAsync($"You have been added to ```{selectedRegion.First()}```", ephemeral: true);
+        }
+    }
+}
+
+
+

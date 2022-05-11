@@ -1,0 +1,376 @@
+﻿using Discord;
+using Discord.WebSocket;
+using Discord.Interactions;
+using SpotifyAPI.Web;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Victoria;
+using Victoria.Enums;
+
+
+namespace TiimmmeeyyyCS.Services
+{
+
+
+    [Group("music", "The Music group")]
+    public class MusicModule : InteractionModuleBase<SocketInteractionContext>
+    {
+        private readonly LavaNode _lavaNode;
+        private readonly EmbedHelper _embedHelper;
+        private readonly ComponentHelper _componentHelper;
+        private readonly PlayerHelper _playerHelper;
+        public InteractionService Commands {get; set; }
+        
+
+        public MusicModule(LavaNode lavaNode, EmbedHelper eh, ComponentHelper ch, PlayerHelper ph)
+        {
+            _lavaNode = lavaNode;
+            _embedHelper = eh;
+            _componentHelper = ch;
+            _playerHelper = ph;
+        }
+
+        private async Task RespondNothing(SocketInteraction interaction){
+            try{
+                await interaction.RespondAsync("");
+            }
+            catch{
+                
+            }
+        }
+
+
+        // Sends the menu that users can use to control the bot. This is just an embed with buttons
+        // attached to it that they can press
+        [SlashCommand("start", "Starts the music system")]
+        public async Task Execute()
+        {
+            Console.WriteLine("Here");
+            // Check if the user that runs the command is in a voicechannel
+            var voiceState = Context.User as IVoiceState;
+            if (voiceState?.VoiceChannel == null){
+                await Context.Interaction.RespondAsync("You must be in a voicechannel..", ephemeral: true);
+                return;
+            }
+            // Check if the bot is already playing music in this guild
+            if (_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("I am already playing music...", ephemeral: true);
+                return;
+            }
+
+
+            // Try to join the author's voicechannel
+            try{
+                await _lavaNode.JoinAsync(voiceState.VoiceChannel, Context.Channel as ITextChannel);
+            }
+            catch (Exception ex){
+                await Context.Interaction.RespondAsync($"Something when wrong. ERROR: {ex.Message}", ephemeral: true);
+                return;
+            }
+
+            var player = _lavaNode.GetPlayer(Context.Guild);
+
+            await player.UpdateVolumeAsync(Program.BotConfig.Volume);
+
+            // Send the menu and bind the message to a variable. Putting the message in a public variable is
+            // usefull if we want to get info from the message or edit it in another module/handler
+            await Context.Interaction.RespondAsync("Spawned the menu", ephemeral: true);
+            var msg = await ReplyAsync(embed: _embedHelper.DefaultEmbed(), components: _componentHelper.DefaultMenuComponent());
+
+            var config = Program.BotConfig;
+            config.ChannelID = Context.Channel.Id;
+            config.GuildID = Context.Guild.Id;
+            config.MessageID = msg.Id;
+            config.BotEmbedMessage = msg;
+            ConfigHelper.UpdateConfigFile(config);
+            Program.BotConfig = config;
+        }
+
+        // Responds to the request button from the menu that gets sent when /music start is executed by a user
+        [ComponentInteraction("request", true)]
+        public async Task RequestButtonHandler() =>
+            await Context.Interaction.RespondWithModalAsync<SongRequestModal>("song-request");
+
+        // Here is the Handler that executed code the moment a user submits a request
+        [ModalInteraction("song-request", true)]
+        public async Task ModalResponce(SongRequestModal modal)
+        {
+            var AuthorVoiceState = Context.User as IVoiceState;
+
+            if (AuthorVoiceState?.VoiceChannel != null)
+            {
+                Console.WriteLine($"{Context.User} entered query: '{modal.Song}'");
+
+                if (!_lavaNode.HasPlayer(Context.Guild))
+                {
+                    await _lavaNode.JoinAsync(AuthorVoiceState.VoiceChannel, Context.Channel as ITextChannel);
+                }
+                
+                var player = _lavaNode.GetPlayer(Context.Guild);
+
+                if (AuthorVoiceState.VoiceChannel.Id == player.VoiceChannel.Id)
+                {
+                    await _playerHelper.AddSongsToPLayer(modal.Song, _lavaNode, player, Context, _embedHelper, _componentHelper);
+                    await Context.Interaction.RespondAsync("Queued the song/songs!", ephemeral: true);
+                }
+                else
+                {
+                    await Context.Interaction.RespondAsync("You aren't in the same voicechannel as the bot");
+                }
+            }
+
+            await RespondNothing(Context.Interaction);
+        }
+
+        [ComponentInteraction("pause", true)]
+        public async Task PauseButtonHandler()
+        {
+            // Check if the bot is connected to a voicechannel
+            if (!_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("The bot is not connected to a voicechannel", ephemeral: true);
+                return;
+            }
+
+            var player = _lavaNode.GetPlayer(Context.Guild);
+            var VoiceState = Context.User as IVoiceState;
+
+            // Check if the author is in the same channel as the bot
+            if (player.VoiceChannel.Id != VoiceState?.VoiceChannel.Id){ 
+                await Context.Interaction.RespondAsync("You must be in the same channel as the bot", ephemeral: true);
+                return;
+            }
+
+            // Check if the bot is playing something 
+            if (player.PlayerState == Victoria.Enums.PlayerState.Playing){
+                await player.PauseAsync();
+                await RespondNothing(Context.Interaction);
+                await Program.BotConfig.BotEmbedMessage.ModifyAsync(x => x.Components = _componentHelper.UpdatedMusicMenuComponent(player));
+            }
+            else{
+                await Context.Interaction.RespondAsync("The bot is already paused", ephemeral: true);
+                return;
+            }
+        }
+
+
+        [ComponentInteraction("resume", true)]
+        public async Task PlayButtonHandler()
+        {
+            var player = _lavaNode.GetPlayer(Context.Guild);
+            var VoiceState = Context.User as IVoiceState;
+
+            // Check if the bot is connected to a voicechannel
+            if (!_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("Bot is not connected to a voicechannel", ephemeral: true);
+            }
+
+            // Check if the author is in the same channel as the bot
+            if (player.VoiceChannel.Id != VoiceState?.VoiceChannel.Id){ 
+                await Context.Interaction.RespondAsync("You must be in the same channel as the bot", ephemeral: true);
+                return;
+            }
+
+            // Check if the bot is playing something 
+            if (player.PlayerState == Victoria.Enums.PlayerState.Paused){
+                await player.ResumeAsync();
+                await RespondNothing(Context.Interaction);
+                await Program.BotConfig.BotEmbedMessage.ModifyAsync(x => x.Components = _componentHelper.UpdatedMusicMenuComponent(player));
+            }
+            else{
+                await RespondNothing(Context.Interaction);
+                return;
+            }
+        }
+
+
+        [ComponentInteraction("skip", true)]
+        public async Task SkipButtonHandler()
+        {
+            // Check if the bot is connected to a voicechannel
+            if (!_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("The bot is not connected to a voicechannel", ephemeral: true);
+                return;
+            }
+
+            var player = _lavaNode.GetPlayer(Context.Guild);
+            var VoiceState = Context.User as IVoiceState;
+
+            // Check if the author is in the same channel as the bot
+            if (player.VoiceChannel.Id != VoiceState?.VoiceChannel.Id){ 
+                await Context.Interaction.RespondAsync("You must be in the same channel as the bot", ephemeral: true);
+                return;
+            }
+
+            // skip to the next song if there is a next song in the queue.
+            if (player.Queue.Count > 0){
+                Console.WriteLine("Skipping to next song");
+                await player.SkipAsync(System.TimeSpan.Zero);
+                await Program.BotConfig.BotEmbedMessage.ModifyAsync(x => {x.Embed = _embedHelper.BuildMusicEmbed(player); x.Components = _componentHelper.UpdatedMusicMenuComponent(player);});
+            }
+            else
+            {
+                Console.WriteLine("Stopping the song");
+                await player.StopAsync();
+                await Program.BotConfig.BotEmbedMessage.ModifyAsync(x => {x.Embed = _embedHelper.DefaultEmbed(); x.Components = _componentHelper.DefaultMenuComponent();});
+            }
+            await RespondNothing(Context.Interaction);
+        }
+
+        [ComponentInteraction("leave", true)]
+        public async Task LeaveButtonHandler()
+        {
+            // Check if the bot is connected to a voicechannel
+            if (!_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("The bot is not connected to a voicechannel", ephemeral: true);
+                return;
+            }
+
+            var player = _lavaNode.GetPlayer(Context.Guild);
+            var VoiceState = Context.User as IVoiceState;
+
+            // Check if the author is in the same channel as the bot
+            if (player.VoiceChannel.Id != VoiceState?.VoiceChannel.Id){ 
+                await Context.Interaction.RespondAsync("You must be in the same channel as the bot", ephemeral: true);
+                return;
+            }
+
+            
+            await _lavaNode.LeaveAsync(player.VoiceChannel);
+            await Program.BotConfig.BotEmbedMessage.ModifyAsync(x => {x.Embed = _embedHelper.DefaultEmbed(); x.Components = _componentHelper.DefaultMenuComponent();});
+            await RespondNothing(Context.Interaction);
+        }
+
+
+        [SlashCommand("volume", "Changes the volume of the bot")]
+        public async Task VolumeChangeAsync(int volume)
+        {
+            // Check if the bot is connected to a voicechannel
+            if (!_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("The bot is not connected to a voicechannel", ephemeral: true);
+                return;
+            }
+
+            var player = _lavaNode.GetPlayer(Context.Guild);
+            var VoiceState = Context.User as IVoiceState;
+
+            // Check if the author is in the same channel as the bot
+            if (player.VoiceChannel.Id != VoiceState?.VoiceChannel.Id){ 
+                await Context.Interaction.RespondAsync("You must be in the same channel as the bot", ephemeral: true);
+                return;
+            }
+
+            try{
+                await player.UpdateVolumeAsync((ushort)volume);
+                await Program.BotConfig.BotEmbedMessage.ModifyAsync(x => 
+                    {x.Embed = _embedHelper.BuildMusicEmbed(player);});
+                await Context.Interaction.RespondAsync("Changed the volume", ephemeral: true);
+            }
+            catch (Exception ex){
+                Console.WriteLine("Failed to change the volume with ERROR: " + ex.Message);
+            }
+        }
+
+
+        [SlashCommand("p", "Plays a song on the bot", true)]
+        public async Task PlayCommandHandler(string query)
+        {
+            var AuthorVoiceState = Context.User as IVoiceState;
+
+            if (AuthorVoiceState?.VoiceChannel != null)
+            {
+                Console.WriteLine($"{Context.User} entered query: '{query}'");
+
+                if (!_lavaNode.HasPlayer(Context.Guild))
+                {
+                    await _lavaNode.JoinAsync(AuthorVoiceState.VoiceChannel, Context.Channel as ITextChannel);
+                }
+            
+                var player = _lavaNode.GetPlayer(Context.Guild);
+
+                if (AuthorVoiceState.VoiceChannel.Id == player.VoiceChannel.Id)
+                {
+                    await _playerHelper.AddSongsToPLayer(query, _lavaNode, player, Context, _embedHelper, _componentHelper);
+                    await Context.Interaction.RespondAsync("Queued the song/songs!", ephemeral: true);
+                }
+                else
+                {
+                    await Context.Interaction.RespondAsync("You aren't in the same voicechannel as the bot");
+                }
+            }
+            else
+            {
+                await Context.Interaction.RespondAsync("You aren't connected to a voicechannel");
+            }
+        }
+
+
+        [SlashCommand("seek", "Skips to a given time in the song")]
+        public async Task SeekCommandHandler(int minutes, int seconds)
+        {
+            // Check if the bot is connected to a voicechannel
+            if (!_lavaNode.HasPlayer(Context.Guild)){
+                await Context.Interaction.RespondAsync("The bot is not connected to a voicechannel", ephemeral: true);
+                return;
+            }
+
+            var player = _lavaNode.GetPlayer(Context.Guild);
+            var VoiceState = Context.User as IVoiceState;
+            var TrackLength = player.Track.Duration;
+            var GivenTime = TimeSpan.FromSeconds(seconds+(minutes*60));
+
+            // Check if the author is in the same channel as the bot
+            if (player.VoiceChannel.Id != VoiceState?.VoiceChannel.Id){ 
+                await Context.Interaction.RespondAsync("You must be in the same channel as the bot", ephemeral: true);
+                return;
+            }
+
+            if (player.PlayerState == Victoria.Enums.PlayerState.Playing || player.PlayerState == Victoria.Enums.PlayerState.Paused){
+                if (player.Track.CanSeek){
+                    if (TrackLength.TotalSeconds > GivenTime.TotalSeconds){
+                        await player.SeekAsync(TimeSpan.FromSeconds(seconds+(minutes*60)));
+                        await Context.Interaction.RespondAsync("Skipped to that part of the song", ephemeral: true);
+                    }
+                    else{
+                        await Context.Interaction.RespondAsync("The time that you gave is past the track's length", ephemeral: true);
+                    }
+                }
+                else{
+                    await Context.Interaction.RespondAsync("This track isn't seekable", ephemeral: true);
+                }
+            }
+            else{
+                await Context.Interaction.RespondAsync("There is currently no track playing", ephemeral: true);
+            }
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+        public class SongRequestModal : IModal
+        {
+            public string Title => "Enter Song";
+
+            [InputLabel("Song Name")]
+            [ModalTextInput("song-name", placeholder: "Baby - Justin Bieber")]
+            public string Song {get; set; }
+        }
+    }
+}
+
+
+
